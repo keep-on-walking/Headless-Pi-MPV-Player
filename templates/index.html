@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Headless Pi MPV Player</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <h1>🎬 Headless Pi MPV Player</h1>
+            <div class="subtitle">
+                <span id="hostname">Loading...</span> | 
+                <span id="hdmi-status" class="status-badge">Detecting...</span> |
+                <span id="api-endpoint" class="api-badge">API: Loading...</span>
+            </div>
+        </header>
+
+        <!-- Main Content Grid -->
+        <div class="main-grid">
+            
+            <!-- Player Control Card -->
+            <div class="card player-card">
+                <h2 class="card-title">🎮 Player Control</h2>
+                
+                <!-- Now Playing -->
+                <div class="now-playing">
+                    <div class="label">Now Playing:</div>
+                    <div id="current-file" class="current-file">No file selected</div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div class="progress-container">
+                    <div class="progress-bar" id="progress-bar">
+                        <div id="progress-fill" class="progress-fill"></div>
+                    </div>
+                    <div class="progress-info">
+                        <span id="current-time">00:00</span>
+                        <span id="duration">00:00</span>
+                    </div>
+                </div>
+
+                <!-- Main Controls -->
+                <div class="controls-grid">
+                    <button id="btn-play" class="btn btn-primary" title="Play/Resume">
+                        <span class="icon">▶</span>
+                        <span>PLAY</span>
+                    </button>
+                    <button id="btn-pause" class="btn btn-secondary" title="Pause">
+                        <span class="icon">⏸</span>
+                        <span>PAUSE</span>
+                    </button>
+                    <button id="btn-stop" class="btn btn-danger" title="Stop">
+                        <span class="icon">⏹</span>
+                        <span>STOP</span>
+                    </button>
+                </div>
+
+                <!-- Skip Controls -->
+                <div class="skip-controls">
+                    <button id="btn-skip-back-30" class="btn btn-secondary" title="Skip -30s">⏪ -30s</button>
+                    <button id="btn-skip-back-10" class="btn btn-secondary" title="Skip -10s">⏪ -10s</button>
+                    
+                    <div class="custom-skip">
+                        <input type="number" id="skip-seconds" placeholder="sec" min="-3600" max="3600" step="1">
+                        <button id="btn-skip-custom" class="btn btn-secondary" title="Skip custom">SKIP</button>
+                    </div>
+                    
+                    <button id="btn-skip-forward-10" class="btn btn-secondary" title="Skip +10s">⏩ +10s</button>
+                    <button id="btn-skip-forward-30" class="btn btn-secondary" title="Skip +30s">⏩ +30s</button>
+                </div>
+
+                <!-- Volume Control -->
+                <div class="volume-control">
+                    <label>🔊 Volume:</label>
+                    <input type="range" id="volume" class="volume-slider" min="0" max="100" value="100">
+                    <span id="volume-value">100%</span>
+                </div>
+
+                <!-- Seek Control -->
+                <div class="seek-control">
+                    <label>⏱️ Seek to:</label>
+                    <input type="number" id="seek-position" min="0" placeholder="seconds">
+                    <button id="btn-seek" class="btn btn-primary">SEEK</button>
+                </div>
+
+                <!-- Player Status -->
+                <div class="player-status">
+                    <div class="status-item">
+                        <span class="status-label">State:</span>
+                        <span id="player-state" class="status-value">Stopped</span>
+                    </div>
+                    <div class="status-item">
+                        <span class="status-label">Position:</span>
+                        <span id="position-display" class="status-value">0s</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- File Management Card -->
+            <div class="card files-card">
+                <h2 class="card-title">📁 Media Files</h2>
+                
+                <!-- Upload Area -->
+                <div class="upload-area" id="upload-area">
+                    <div class="upload-icon">⬆️</div>
+                    <div class="upload-text">Drag & drop videos here or click to browse</div>
+                    <input type="file" id="file-input" accept="video/*" multiple hidden>
+                    <button id="btn-browse" class="btn btn-primary">CHOOSE FILES</button>
+                </div>
+
+                <!-- Upload Progress -->
+                <div id="upload-progress" class="upload-progress" style="display: none;">
+                    <div class="progress-bar">
+                        <div id="upload-progress-fill" class="progress-fill"></div>
+                    </div>
+                    <div id="upload-status">Uploading...</div>
+                </div>
+
+                <!-- File List -->
+                <div class="file-list-container">
+                    <div class="file-list-header">
+                        <h3>Available Videos</h3>
+                        <button id="btn-refresh-files" class="btn btn-secondary btn-small">🔄 Refresh</button>
+                    </div>
+                    <div id="file-list" class="file-list">
+                        <!-- Files will be populated here -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Display Settings Card -->
+            <div class="card settings-card">
+                <h2 class="card-title">🖥️ Display Settings</h2>
+                
+                <!-- HDMI Output Selection -->
+                <div class="hdmi-settings">
+                    <h3>HDMI Output</h3>
+                    <div id="hdmi-outputs" class="hdmi-outputs">
+                        <!-- HDMI outputs will be populated here -->
+                    </div>
+                </div>
+
+                <!-- Configuration -->
+                <div class="config-settings">
+                    <h3>Configuration</h3>
+                    <div class="config-item">
+                        <label>
+                            <input type="checkbox" id="config-loop">
+                            Loop Playback
+                        </label>
+                    </div>
+                    <div class="config-item">
+                        <label>
+                            <input type="checkbox" id="config-hwaccel" checked>
+                            Hardware Acceleration
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <!-- API Information Card -->
+            <div class="card api-card">
+                <h2 class="card-title">🔌 Node-RED Integration</h2>
+                
+                <div class="api-info">
+                    <div class="api-endpoint-display">
+                        <code id="api-base-url">Loading...</code>
+                        <button id="btn-copy-api" class="btn btn-secondary btn-small">📋 Copy</button>
+                    </div>
+                </div>
+
+                <details class="api-docs">
+                    <summary>API Endpoints</summary>
+                    <div class="api-endpoints">
+                        <div class="endpoint">
+                            <code>POST /api/play</code>
+                            <span>Play video {"file": "video.mp4"}</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>POST /api/pause</code>
+                            <span>Toggle pause/resume</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>POST /api/stop</code>
+                            <span>Stop playback</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>POST /api/skip</code>
+                            <span>Skip {"seconds": 30}</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>POST /api/seek</code>
+                            <span>Seek {"position": 300}</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>POST /api/volume</code>
+                            <span>Set volume {"level": 50}</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>GET /api/status</code>
+                            <span>Get player status</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>GET /api/files</code>
+                            <span>List media files</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>POST /api/upload</code>
+                            <span>Upload file (multipart)</span>
+                        </div>
+                        <div class="endpoint">
+                            <code>DELETE /api/files/{filename}</code>
+                            <span>Delete a file</span>
+                        </div>
+                    </div>
+                </details>
+
+                <!-- Example Node-RED Flow -->
+                <details class="api-docs">
+                    <summary>Example Node-RED Flow</summary>
+                    <div class="code-example">
+                        <pre>{
+  "method": "POST",
+  "url": "http://[pi-ip]:5000/api/play",
+  "headers": {
+    "Content-Type": "application/json"
+  },
+  "payload": {
+    "file": "video.mp4"
+  }
+}</pre>
+                        <button class="btn btn-secondary btn-small" onclick="copyToClipboard(this.previousElementSibling.textContent)">📋 Copy</button>
+                    </div>
+                </details>
+            </div>
+
+        </div>
+
+        <!-- Footer -->
+        <footer>
+            <div class="footer-content">
+                <span>Headless Pi MPV Player v1.0.0</span>
+                <span id="connection-status" class="connection-status">● Connected</span>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Toast Notifications Container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
