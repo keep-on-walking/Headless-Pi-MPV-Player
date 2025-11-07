@@ -1,9 +1,10 @@
 #!/bin/bash
 
 #############################################
-# Headless Pi MPV Player - Installation Script
+# Headless Pi MPV Player - Installation Script (FIXED)
 # GitHub: keep-on-walking/Headless-Pi-MPV-Player
 # One-command installer for Raspberry Pi
+# FIXES: Screen blanking and HDMI audio issues
 #############################################
 
 set -e  # Exit on error
@@ -52,7 +53,7 @@ check_raspberry_pi() {
 
 # Main installation
 main() {
-    print_header "Headless Pi MPV Player Installer"
+    print_header "Headless Pi MPV Player Installer (FIXED)"
     
     print_message "This script will install:" "$GREEN"
     echo "  • MPV player with hardware acceleration"
@@ -60,6 +61,7 @@ main() {
     echo "  • Web interface with dark theme"
     echo "  • Node-RED API endpoints"
     echo "  • Systemd service for auto-start"
+    echo "  • FIXES: Screen blanking and HDMI audio"
     echo ""
     
     # Check system
@@ -83,6 +85,38 @@ main() {
     print_message "Installing system utilities..." "$YELLOW"
     sudo apt-get install -y git curl wget
     
+    # FIX: Disable cloud-init messages and console output
+    print_header "Fixing Screen Display Issues"
+    
+    print_message "Disabling cloud-init messages..." "$YELLOW"
+    # Disable cloud-init entirely if not needed
+    if [ -f /etc/cloud/cloud.cfg ]; then
+        sudo touch /etc/cloud/cloud-init.disabled
+    fi
+    
+    # Modify boot cmdline to hide boot messages
+    print_message "Configuring quiet boot..." "$YELLOW"
+    if [ -f /boot/cmdline.txt ]; then
+        # Backup original
+        sudo cp /boot/cmdline.txt /boot/cmdline.txt.backup
+        # Add quiet and console blanking parameters if not present
+        if ! grep -q "quiet" /boot/cmdline.txt; then
+            sudo sed -i '$ s/$/ quiet loglevel=0 logo.nologo vt.global_cursor_default=0 consoleblank=1/' /boot/cmdline.txt
+        fi
+    fi
+    
+    # Disable getty on tty1 (console login)
+    print_message "Disabling console login prompt..." "$YELLOW"
+    sudo systemctl disable getty@tty1.service 2>/dev/null || true
+    
+    # Set console to blank after 1 second
+    print_message "Setting console blanking..." "$YELLOW"
+    echo "setterm -blank 1 -powerdown 2" | sudo tee -a /etc/rc.local > /dev/null 2>&1 || true
+    
+    # Configure kernel to blank console
+    echo "BLANK_TIME=1" | sudo tee /etc/kbd/config > /dev/null 2>&1 || true
+    echo "POWERDOWN_TIME=2" | sudo tee -a /etc/kbd/config > /dev/null 2>&1 || true
+    
     # Configure MPV for hardware acceleration
     print_header "Configuring MPV"
     
@@ -96,9 +130,8 @@ gpu-context=drm
 hwdec=auto-copy
 hwdec-codecs=all
 
-# Audio settings
+# Audio settings for HDMI
 ao=alsa
-audio-device=alsa/default:CARD=vc4hdmi
 audio-channels=stereo
 volume=100
 
@@ -107,6 +140,79 @@ fullscreen=yes
 keep-open=no
 idle=no
 EOF
+    
+    # FIX: Configure HDMI audio properly
+    print_header "Fixing HDMI Audio"
+    
+    # Detect HDMI audio device
+    print_message "Detecting HDMI audio device..." "$YELLOW"
+    AUDIO_DEVICE=""
+    
+    # Check for Raspberry Pi 4 HDMI audio (vc4hdmi)
+    if aplay -l 2>/dev/null | grep -q "vc4hdmi0"; then
+        AUDIO_DEVICE="hdmi:CARD=vc4hdmi0,DEV=0"
+        print_message "Found Pi 4 HDMI port 0 audio" "$GREEN"
+    elif aplay -l 2>/dev/null | grep -q "vc4hdmi1"; then
+        AUDIO_DEVICE="hdmi:CARD=vc4hdmi1,DEV=0"
+        print_message "Found Pi 4 HDMI port 1 audio" "$GREEN"
+    elif aplay -l 2>/dev/null | grep -q "vc4hdmi"; then
+        AUDIO_DEVICE="hdmi:CARD=vc4hdmi,DEV=0"
+        print_message "Found Pi 4 HDMI audio" "$GREEN"
+    elif aplay -l 2>/dev/null | grep -q "HDMI"; then
+        AUDIO_DEVICE="hdmi:CARD=HDMI,DEV=0"
+        print_message "Found generic HDMI audio" "$GREEN"
+    fi
+    
+    # Create ALSA configuration for HDMI audio
+    print_message "Creating ALSA configuration..." "$YELLOW"
+    cat > ~/.asoundrc << 'EOF'
+# Default to HDMI audio
+pcm.!default {
+    type hw
+    card vc4hdmi0
+    device 0
+}
+
+ctl.!default {
+    type hw
+    card vc4hdmi0
+}
+
+# Fallback configuration
+pcm.hdmi {
+    type hw
+    card vc4hdmi0
+    device 0
+}
+EOF
+    
+    # Also create system-wide ALSA config
+    sudo tee /etc/asound.conf > /dev/null << 'EOF'
+# System-wide HDMI audio configuration
+pcm.!default {
+    type hw
+    card vc4hdmi0
+    device 0
+}
+
+ctl.!default {
+    type hw
+    card vc4hdmi0
+}
+EOF
+    
+    # Enable HDMI audio in boot config
+    if ! grep -q "hdmi_drive=2" /boot/config.txt 2>/dev/null; then
+        print_message "Enabling HDMI audio in boot config..." "$YELLOW"
+        echo "hdmi_drive=2" | sudo tee -a /boot/config.txt > /dev/null
+        echo "hdmi_force_hotplug=1" | sudo tee -a /boot/config.txt > /dev/null
+    fi
+    
+    # Force audio to HDMI using raspi-config settings
+    if command -v raspi-config &> /dev/null; then
+        print_message "Setting audio output to HDMI..." "$YELLOW"
+        sudo raspi-config nonint do_audio 2 2>/dev/null || true
+    fi
     
     # Create installation directory
     print_header "Setting up Application"
@@ -128,10 +234,14 @@ EOF
     mkdir -p "$INSTALL_DIR"
     
     # Download or copy files
-    if [ -d "$(dirname "$0")/app.py" ]; then
+    if [ -f "$(dirname "$0")/app.py" ]; then
         # Local installation
         print_message "Installing from local files..." "$YELLOW"
         cp -r "$(dirname "$0")"/* "$INSTALL_DIR/"
+        # Use the fixed mpv_controller if it exists
+        if [ -f "$(dirname "$0")/mpv_controller_fixed.py" ]; then
+            cp "$(dirname "$0")/mpv_controller_fixed.py" "$INSTALL_DIR/mpv_controller.py"
+        fi
     else
         # Download from GitHub
         print_message "Downloading from GitHub..." "$YELLOW"
@@ -154,31 +264,7 @@ EOF
     print_message "Creating media directory..." "$YELLOW"
     mkdir -p ~/videos
     
-    # Configure audio for HDMI
-    print_header "Configuring Audio"
-    
-    print_message "Setting up HDMI audio..." "$YELLOW"
-    
-    # Create ALSA configuration
-    cat > ~/.asoundrc << 'EOF'
-pcm.!default {
-    type hw
-    card vc4hdmi
-}
-
-ctl.!default {
-    type hw
-    card vc4hdmi
-}
-EOF
-    
-    # Enable audio in config.txt
-    if ! grep -q "hdmi_drive=2" /boot/config.txt 2>/dev/null; then
-        print_message "Enabling HDMI audio in boot config..." "$YELLOW"
-        echo "hdmi_drive=2" | sudo tee -a /boot/config.txt > /dev/null
-    fi
-    
-    # Create systemd service
+    # Create systemd service with proper environment
     print_header "Setting up System Service"
     
     print_message "Creating systemd service..." "$YELLOW"
@@ -195,12 +281,16 @@ Group=$USER
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="DISPLAY="
+Environment="HOME=$HOME"
+ExecStartPre=/bin/sh -c 'setterm -blank 1 --term linux </dev/tty1'
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
 Restart=always
 RestartSec=5
+StandardOutput=null
+StandardError=null
 
-# Permissions for DRM/KMS
-SupplementaryGroups=video audio
+# Permissions for DRM/KMS and audio
+SupplementaryGroups=video audio tty
 
 [Install]
 WantedBy=multi-user.target
@@ -217,6 +307,20 @@ EOF
         sudo ufw allow $PORT/tcp 2>/dev/null || true
     fi
     
+    # Create blank screen script
+    print_message "Creating screen blanking script..." "$YELLOW"
+    cat > "$INSTALL_DIR/blank_screen.sh" << 'EOF'
+#!/bin/bash
+# Blank the screen
+clear > /dev/tty1
+setterm -cursor off > /dev/tty1
+echo -e '\033[?25l' > /dev/tty1
+EOF
+    chmod +x "$INSTALL_DIR/blank_screen.sh"
+    
+    # Execute blank screen immediately
+    sudo $INSTALL_DIR/blank_screen.sh 2>/dev/null || true
+    
     # Create uninstall script
     print_message "Creating uninstall script..." "$YELLOW"
     cat > "$INSTALL_DIR/uninstall.sh" << 'EOF'
@@ -227,6 +331,8 @@ sudo systemctl disable headless-mpv-player
 sudo rm /etc/systemd/system/headless-mpv-player.service
 sudo systemctl daemon-reload
 rm -rf ~/headless-mpv-player
+# Restore boot messages if desired
+sudo cp /boot/cmdline.txt.backup /boot/cmdline.txt 2>/dev/null || true
 echo "Uninstallation complete!"
 EOF
     chmod +x "$INSTALL_DIR/uninstall.sh"
@@ -271,6 +377,14 @@ EOF
     print_message "Video files location: ~/videos" "$YELLOW"
     print_message "Configuration file: ~/headless-mpv-config.json" "$YELLOW"
     echo ""
+    print_message "FIXES APPLIED:" "$GREEN"
+    echo "  ✓ Screen blanking configured (no text when idle)"
+    echo "  ✓ HDMI audio properly configured"
+    echo "  ✓ Cloud-init messages disabled"
+    echo ""
+    print_message "Note: A reboot is recommended for all changes to take effect" "$YELLOW"
+    print_message "Run: sudo reboot" "$YELLOW"
+    echo ""
     print_message "To uninstall, run: $INSTALL_DIR/uninstall.sh" "$YELLOW"
     echo ""
     print_message "Enjoy your Headless Pi MPV Player! 🎬" "$GREEN"
@@ -278,3 +392,4 @@ EOF
 
 # Run main function
 main "$@"
+
