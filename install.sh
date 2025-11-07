@@ -85,37 +85,104 @@ main() {
     print_message "Installing system utilities..." "$YELLOW"
     sudo apt-get install -y git curl wget
     
-    # FIX: Disable cloud-init messages and console output
+    # FIX: Comprehensive screen blanking to prevent any text display
     print_header "Fixing Screen Display Issues"
     
-    print_message "Disabling cloud-init messages..." "$YELLOW"
-    # Disable cloud-init entirely if not needed
-    if [ -f /etc/cloud/cloud.cfg ]; then
+    print_message "Applying comprehensive screen blanking fix..." "$YELLOW"
+    
+    # 1. Backup and update boot parameters
+    if [ ! -f /boot/cmdline.txt.backup ]; then
+        sudo cp /boot/cmdline.txt /boot/cmdline.txt.backup
+    fi
+    # Remove existing quiet parameters to avoid duplication
+    sudo sed -i 's/ quiet//g; s/ loglevel=[0-9]//g; s/ logo.nologo//g; s/ vt.global_cursor_default=[0-9]//g; s/ consoleblank=[0-9]//g; s/ console=tty[0-9]//g' /boot/cmdline.txt
+    # Add comprehensive quiet boot parameters including console redirect to tty3
+    sudo sed -i '$ s/$/ quiet loglevel=0 logo.nologo vt.global_cursor_default=0 consoleblank=1 console=tty3/' /boot/cmdline.txt
+    
+    # 2. Disable boot splash in config.txt
+    if ! grep -q "disable_splash=1" /boot/config.txt; then
+        echo "" | sudo tee -a /boot/config.txt > /dev/null
+        echo "# Disable boot splash and logos" | sudo tee -a /boot/config.txt > /dev/null
+        echo "disable_splash=1" | sudo tee -a /boot/config.txt > /dev/null
+        echo "boot_delay=0" | sudo tee -a /boot/config.txt > /dev/null
+    fi
+    
+    # 3. Disable and mask getty on tty1
+    sudo systemctl stop getty@tty1.service 2>/dev/null || true
+    sudo systemctl disable getty@tty1.service 2>/dev/null || true
+    sudo systemctl mask getty@tty1.service 2>/dev/null || true
+    
+    # 4. Create early blank screen service
+    sudo tee /etc/systemd/system/blank-screen-early.service > /dev/null << 'BLANKEOF'
+[Unit]
+Description=Early Screen Blanking
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target getty.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'for i in 1 2 3 4 5; do clear > /dev/tty1 2>&1; echo -e "\\033[?25l\\033[2J\\033[H" > /dev/tty1 2>&1; setterm -blank 1 -powerdown 1 > /dev/tty1 2>&1; sleep 0.1; done'
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=sysinit.target
+BLANKEOF
+    
+    # 5. Create persistent blank screen timer
+    sudo tee /etc/systemd/system/blank-screen-timer.service > /dev/null << 'BLANKEOF'
+[Unit]
+Description=Periodic Screen Blanking
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -c 'clear > /dev/tty1 2>&1; echo -e "\\033[?25l\\033[2J\\033[H" > /dev/tty1 2>&1'
+StandardOutput=null
+StandardError=null
+BLANKEOF
+    
+    sudo tee /etc/systemd/system/blank-screen-timer.timer > /dev/null << 'BLANKEOF'
+[Unit]
+Description=Run blank screen every 10 seconds
+After=multi-user.target
+
+[Timer]
+OnBootSec=5
+OnUnitActiveSec=10
+
+[Install]
+WantedBy=timers.target
+BLANKEOF
+    
+    # 6. Create console blanking script
+    sudo tee /usr/local/bin/blank-console > /dev/null << 'BLANKEOF'
+#!/bin/bash
+# Blank all consoles
+for tty in /dev/tty[1-6]; do
+    if [ -e "$tty" ]; then
+        echo -e "\033[?25l\033[2J\033[H" > "$tty" 2>/dev/null
+        setterm -blank 1 -powerdown 1 > "$tty" 2>/dev/null
+        clear > "$tty" 2>/dev/null
+    fi
+done
+BLANKEOF
+    sudo chmod +x /usr/local/bin/blank-console
+    
+    # 7. Configure kernel console blanking
+    echo "kernel.printk = 0 0 0 0" | sudo tee /etc/sysctl.d/20-quiet-console.conf > /dev/null
+    sudo sysctl -p /etc/sysctl.d/20-quiet-console.conf 2>/dev/null || true
+    
+    # 8. Disable cloud-init if present
+    if [ -d /etc/cloud ]; then
         sudo touch /etc/cloud/cloud-init.disabled
     fi
     
-    # Modify boot cmdline to hide boot messages
-    print_message "Configuring quiet boot..." "$YELLOW"
-    if [ -f /boot/cmdline.txt ]; then
-        # Backup original
-        sudo cp /boot/cmdline.txt /boot/cmdline.txt.backup
-        # Add quiet and console blanking parameters if not present
-        if ! grep -q "quiet" /boot/cmdline.txt; then
-            sudo sed -i '$ s/$/ quiet loglevel=0 logo.nologo vt.global_cursor_default=0 consoleblank=1/' /boot/cmdline.txt
-        fi
-    fi
-    
-    # Disable getty on tty1 (console login)
-    print_message "Disabling console login prompt..." "$YELLOW"
-    sudo systemctl disable getty@tty1.service 2>/dev/null || true
-    
-    # Set console to blank after 1 second
-    print_message "Setting console blanking..." "$YELLOW"
-    echo "setterm -blank 1 -powerdown 2" | sudo tee -a /etc/rc.local > /dev/null 2>&1 || true
-    
-    # Configure kernel to blank console
-    echo "BLANK_TIME=1" | sudo tee /etc/kbd/config > /dev/null 2>&1 || true
-    echo "POWERDOWN_TIME=2" | sudo tee -a /etc/kbd/config > /dev/null 2>&1 || true
+    # 9. Enable blank screen services
+    sudo systemctl daemon-reload
+    sudo systemctl enable blank-screen-early.service 2>/dev/null || true
+    sudo systemctl enable blank-screen-timer.timer 2>/dev/null || true
     
     # Configure MPV for hardware acceleration
     print_header "Configuring MPV"
@@ -323,24 +390,22 @@ EOF
     
     # Execute blank screen immediately
     sudo $INSTALL_DIR/blank_screen.sh 2>/dev/null || true
+    /usr/local/bin/blank-console 2>/dev/null || true
     
-    # Add screen blanking to rc.local for boot-time execution
-    if [ -f /etc/rc.local ]; then
-        if ! grep -q "blank_screen.sh" /etc/rc.local; then
-            sudo sed -i '/^exit 0/i \
-# Blank screen for MPV player\
-'"$INSTALL_DIR"'/blank_screen.sh &' /etc/rc.local
-        fi
-    else
-        # Create rc.local if it doesn't exist
-        sudo tee /etc/rc.local > /dev/null << RCEOF
+    # Setup rc.local for additional blanking
+    sudo tee /etc/rc.local > /dev/null << RCEOF
 #!/bin/bash
-# Blank screen for MPV player
-$INSTALL_DIR/blank_screen.sh &
+# Blank console on boot
+/usr/local/bin/blank-console &
+
+# Additional blanking after short delay  
+(sleep 2 && /usr/local/bin/blank-console) &
+(sleep 5 && /usr/local/bin/blank-console) &
+
 exit 0
 RCEOF
-        sudo chmod +x /etc/rc.local
-    fi
+    sudo chmod +x /etc/rc.local
+    sudo systemctl enable rc-local.service 2>/dev/null || true
     
     # Create uninstall script
     print_message "Creating uninstall script..." "$YELLOW"
@@ -413,5 +478,6 @@ EOF
 
 # Run main function
 main "$@"
+
 
 
