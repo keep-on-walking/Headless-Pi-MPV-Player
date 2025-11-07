@@ -280,17 +280,20 @@ User=$USER
 Group=$USER
 WorkingDirectory=$INSTALL_DIR
 Environment="PATH=$INSTALL_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="DISPLAY="
+Environment="PYTHONUNBUFFERED=1"
 Environment="HOME=$HOME"
-ExecStartPre=/bin/sh -c 'setterm -blank 1 --term linux </dev/tty1'
 ExecStart=$INSTALL_DIR/venv/bin/python $INSTALL_DIR/app.py
-Restart=always
-RestartSec=5
-StandardOutput=null
-StandardError=null
+Restart=on-failure
+RestartSec=10
+StartLimitInterval=60
+StartLimitBurst=3
 
 # Permissions for DRM/KMS and audio
-SupplementaryGroups=video audio tty
+SupplementaryGroups=video audio
+
+# Logging
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -320,6 +323,24 @@ EOF
     
     # Execute blank screen immediately
     sudo $INSTALL_DIR/blank_screen.sh 2>/dev/null || true
+    
+    # Add screen blanking to rc.local for boot-time execution
+    if [ -f /etc/rc.local ]; then
+        if ! grep -q "blank_screen.sh" /etc/rc.local; then
+            sudo sed -i '/^exit 0/i \
+# Blank screen for MPV player\
+'"$INSTALL_DIR"'/blank_screen.sh &' /etc/rc.local
+        fi
+    else
+        # Create rc.local if it doesn't exist
+        sudo tee /etc/rc.local > /dev/null << RCEOF
+#!/bin/bash
+# Blank screen for MPV player
+$INSTALL_DIR/blank_screen.sh &
+exit 0
+RCEOF
+        sudo chmod +x /etc/rc.local
+    fi
     
     # Create uninstall script
     print_message "Creating uninstall script..." "$YELLOW"
@@ -392,4 +413,5 @@ EOF
 
 # Run main function
 main "$@"
+
 
