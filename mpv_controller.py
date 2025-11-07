@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Headless Pi MPV Player - MPV Controller Module
+Headless Pi MPV Player - MPV Controller Module (FIXED)
 Handles video playback using MPV with hardware acceleration for Raspberry Pi
 Works with or without HDMI display connected
+FIXES: HDMI audio output and screen blanking issues
 """
 
 import os
@@ -87,12 +88,18 @@ class MPVController:
                         '--hwdec-codecs=all',  # Enable for all codecs
                     ])
                 
-                # Audio output via HDMI
-                cmd.extend([
-                    '--ao=alsa',  # Use ALSA for audio
-                    '--audio-device=alsa/default:CARD=vc4hdmi',  # Force HDMI audio
-                    '--audio-channels=stereo',
-                ])
+                # FIXED: Audio output via HDMI for Raspberry Pi 4
+                # Check for vc4hdmi devices (Pi 4)
+                audio_device = self._get_hdmi_audio_device()
+                if audio_device:
+                    cmd.append(f'--audio-device={audio_device}')
+                    logger.info(f"Using audio device: {audio_device}")
+                else:
+                    # Fallback to ALSA default
+                    cmd.extend([
+                        '--ao=alsa',
+                        '--audio-channels=stereo',
+                    ])
             else:
                 # Headless mode - no display connected
                 logger.info("No display detected - running in headless mode")
@@ -160,6 +167,32 @@ class MPVController:
         except Exception as e:
             logger.error(f"Error starting MPV: {e}")
             return False
+    
+    def _get_hdmi_audio_device(self):
+        """Get the correct HDMI audio device for Raspberry Pi"""
+        try:
+            # Run aplay -l to get audio devices
+            result = subprocess.run(['aplay', '-l'], capture_output=True, text=True)
+            if result.returncode == 0:
+                output = result.stdout
+                
+                # Check for Pi 4 HDMI audio (vc4hdmi0 or vc4hdmi1)
+                if 'vc4hdmi0' in output:
+                    logger.debug("Found vc4hdmi0 audio device")
+                    return 'alsa/hdmi:CARD=vc4hdmi0,DEV=0'
+                elif 'vc4hdmi1' in output:
+                    logger.debug("Found vc4hdmi1 audio device")
+                    return 'alsa/hdmi:CARD=vc4hdmi1,DEV=0'
+                elif 'vc4hdmi' in output:
+                    logger.debug("Found vc4hdmi audio device")
+                    return 'alsa/hdmi:CARD=vc4hdmi,DEV=0'
+                elif 'HDMI' in output:
+                    logger.debug("Found generic HDMI audio device")
+                    return 'alsa/hdmi:CARD=HDMI,DEV=0'
+        except Exception as e:
+            logger.debug(f"Error detecting HDMI audio device: {e}")
+        
+        return None
     
     def _detect_hdmi(self):
         """Detect HDMI connection and select output"""
@@ -253,11 +286,28 @@ class MPVController:
             return False
     
     def _ensure_blank_screen(self):
-        """Ensure screen is blank when no video is playing"""
+        """FIXED: Ensure screen is completely blank when no video is playing"""
         try:
-            # Use vcgencmd to blank the display
+            # Method 1: Use vcgencmd to turn display on but blank
             subprocess.run(['vcgencmd', 'display_power', '1'], 
                           capture_output=True, timeout=1)
+            
+            # Method 2: Clear the console and hide cursor
+            if os.path.exists('/dev/tty1'):
+                try:
+                    # Clear console
+                    subprocess.run(['clear'], capture_output=True, timeout=1)
+                    # Turn off cursor
+                    with open('/dev/tty1', 'w') as tty:
+                        tty.write('\033[?25l')  # Hide cursor
+                        tty.write('\033[2J\033[H')  # Clear screen and move cursor to home
+                except:
+                    pass
+            
+            # Method 3: Set console blank time to 1 second (will blank after 1 second of inactivity)
+            subprocess.run(['sudo', 'sh', '-c', 'echo 1 > /sys/module/kernel/parameters/consoleblank'],
+                          capture_output=True, timeout=1)
+            
         except:
             pass
     
@@ -541,3 +591,4 @@ class MPVController:
         """Cleanup resources"""
         self.monitor_running = False
         self.stop()
+
