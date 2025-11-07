@@ -1,0 +1,15 @@
+[Unit]
+Description=Blank Screen Service for MPV Player
+DefaultDependencies=no
+After=sysinit.target
+Before=basic.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'clear > /dev/tty1 2>&1; setterm -blank 1 -cursor off > /dev/tty1 2>&1; echo -e "\\033[?25l\\033[2J\\033[H" > /dev/tty1 2>&1'
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=sysinit.target
