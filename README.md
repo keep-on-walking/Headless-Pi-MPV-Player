@@ -19,6 +19,35 @@ A powerful video player system for Raspberry Pi with web interface, Node-RED API
 - **🌐 Network Control** - Access from any device on your network
 - **📱 Responsive Design** - Works on phones, tablets, and desktops
 
+## 🛡️ Fixes Applied (Nov 2024)
+
+This version includes critical fixes for common Raspberry Pi issues:
+
+### ✅ 1080p Resolution Forcing
+- **Issue**: 4K displays cause severe performance problems on Raspberry Pi
+- **Fix**: Forces 1920x1080@60Hz output mode regardless of display capabilities
+- **Result**: Smooth playback even when connected to 4K displays
+
+### ✅ Pause/Resume Fixed
+- **Issue**: Videos couldn't be unpaused after pausing
+- **Fix**: Proper pause state tracking and IPC command handling
+- **Result**: Reliable pause/resume functionality
+
+### ✅ Audio Sync After Seeking
+- **Issue**: Audio would disappear when skipping forward/backward
+- **Fix**: Audio buffer management and forced resync after seeking
+- **Result**: Audio plays correctly after any seek operation
+
+### ✅ Screen Blanking
+- **Issue**: Console text visible when no video playing
+- **Fix**: Comprehensive screen blanking with multiple fallback methods
+- **Result**: Clean black screen when idle
+
+### ✅ HDMI Audio Detection
+- **Issue**: No audio through HDMI on Raspberry Pi 4
+- **Fix**: Automatic detection of vc4hdmi audio devices
+- **Result**: Audio works automatically through HDMI
+
 ## 📋 Requirements
 
 - Raspberry Pi (tested on Pi 3, Pi 4)

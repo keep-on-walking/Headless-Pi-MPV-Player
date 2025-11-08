@@ -76,8 +76,8 @@ main() {
     # Install dependencies
     print_header "Installing Dependencies"
     
-    print_message "Installing MPV player..." "$YELLOW"
-    sudo apt-get install -y mpv
+    print_message "Installing MPV player and audio dependencies..." "$YELLOW"
+    sudo apt-get install -y mpv alsa-utils
     
     print_message "Installing Python and pip..." "$YELLOW"
     sudo apt-get install -y python3 python3-pip python3-venv
@@ -197,15 +197,23 @@ gpu-context=drm
 hwdec=auto-copy
 hwdec-codecs=all
 
-# Audio settings for HDMI
+# Force 1080p output to prevent 4K slowdown
+drm-mode=1920x1080@60
+
+# Audio settings for HDMI with sync improvements
 ao=alsa
 audio-channels=stereo
+audio-buffer=1.0
+audio-stream-silence
+audio-pitch-correction=yes
+video-sync=audio
 volume=100
 
 # Display settings
 fullscreen=yes
 keep-open=no
 idle=no
+pause=no
 EOF
     
     # FIX: Configure HDMI audio properly
@@ -478,6 +486,3 @@ EOF
 
 # Run main function
 main "$@"
-
-
-

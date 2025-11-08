@@ -3,7 +3,7 @@
 Headless Pi MPV Player - MPV Controller Module (FIXED)
 Handles video playback using MPV with hardware acceleration for Raspberry Pi
 Works with or without HDMI display connected
-FIXES: HDMI audio output and screen blanking issues
+FIXES: HDMI audio output, screen blanking, 1080p forcing, pause/resume, and audio sync
 """
 
 import os
@@ -33,6 +33,7 @@ class MPVController:
         self.duration = 0
         self.volume = config.get('volume', 100)
         self.hdmi_output = config.get('hdmi_output', 'auto')  # auto, HDMI-A-1, HDMI-A-2
+        self.is_paused = False  # Track pause state explicitly
         
         # MPV IPC socket path
         self.mpv_socket = '/tmp/mpvsocket'
@@ -81,6 +82,10 @@ class MPVController:
                 if drm_device:
                     cmd.append(f'--drm-device={drm_device}')
                 
+                # FORCE 1080p OUTPUT - prevents 4K mode
+                cmd.append('--drm-mode=1920x1080@60')
+                logger.info("Forcing 1920x1080@60 output mode")
+                
                 # Hardware decoding
                 if self.config.get('hardware_accel', True):
                     cmd.extend([
@@ -100,6 +105,16 @@ class MPVController:
                         '--ao=alsa',
                         '--audio-channels=stereo',
                     ])
+                
+                # Audio sync and buffer settings to prevent audio issues after seeking
+                cmd.extend([
+                    '--audio-buffer=1.0',  # 1 second audio buffer
+                    '--audio-stream-silence',  # Play silence when audio stops
+                    '--audio-fallback-to-null=no',  # Don't fallback to null audio
+                    '--audio-pitch-correction=yes',  # Maintain audio pitch
+                    '--video-sync=audio',  # Sync video to audio
+                ])
+                
             else:
                 # Headless mode - no display connected
                 logger.info("No display detected - running in headless mode")
@@ -114,6 +129,8 @@ class MPVController:
                         '--ao=alsa',
                         '--audio-device=alsa/default',
                         '--audio-channels=stereo',
+                        '--audio-buffer=1.0',
+                        '--audio-stream-silence',
                     ])
                 else:
                     cmd.append('--ao=null')
@@ -133,6 +150,7 @@ class MPVController:
                 '--keep-open=no',  # Exit when playback ends
                 '--idle=no',  # Don't stay idle after playback
                 f'--volume={self.volume}',
+                '--pause=no',  # Start playing immediately
             ])
             
             # IPC socket for control
@@ -159,6 +177,7 @@ class MPVController:
             )
             
             self.state = 'playing'
+            self.is_paused = False
             time.sleep(1.0)  # Give MPV time to start
             
             logger.info(f"MPV started playing: {filepath}")
@@ -219,74 +238,68 @@ class MPVController:
                             hdmi_info['output'] = 'HDMI-A-1'
                         elif 'hdmi:1' in stdout or 'hdmi1' in stdout:
                             hdmi_info['output'] = 'HDMI-A-2'
-                        logger.debug(f"Detected HDMI via tvservice: {hdmi_info['output']}")
                         return hdmi_info
             except:
                 pass
             
-            # Check /sys/class/drm for connected displays
-            import glob
-            for card_path in glob.glob('/sys/class/drm/card*-HDMI-*/status'):
-                try:
-                    with open(card_path, 'r') as f:
-                        if f.read().strip() == 'connected':
-                            hdmi_info['connected'] = True
-                            # Extract HDMI port from path
-                            match = re.search(r'card\d+-HDMI-A-(\d+)', card_path)
-                            if match:
-                                port_num = match.group(1)
-                                hdmi_info['output'] = f'HDMI-A-{port_num}'
-                            logger.debug(f"Detected HDMI via sysfs: {hdmi_info['output']}")
-                            return hdmi_info
-                except:
-                    continue
+            # Check DRM connection status (works with KMS)
+            try:
+                import glob
+                for card_path in sorted(glob.glob('/sys/class/drm/card*-HDMI-*')):
+                    status_file = os.path.join(card_path, 'status')
+                    if os.path.exists(status_file):
+                        with open(status_file, 'r') as f:
+                            status = f.read().strip()
+                            if status == 'connected':
+                                # Extract HDMI port number
+                                match = re.search(r'HDMI-A-(\d+)', card_path)
+                                if match:
+                                    hdmi_info['output'] = f'HDMI-A-{match.group(1)}'
+                                    hdmi_info['connected'] = True
+                                    return hdmi_info
+            except:
+                pass
+            
+            # If no specific detection worked but we have a display, assume HDMI-A-1
+            if self._check_display_connected():
+                hdmi_info['connected'] = True
+                hdmi_info['output'] = 'HDMI-A-1'
             
         except Exception as e:
             logger.debug(f"HDMI detection error: {e}")
         
         return hdmi_info
     
-    def _find_drm_device(self):
-        """Find the appropriate DRM device"""
-        # Try common DRM devices on Raspberry Pi
-        drm_devices = ['/dev/dri/card1', '/dev/dri/card0']
-        for device in drm_devices:
-            if os.path.exists(device):
-                logger.debug(f"Using DRM device: {device}")
-                return device
-        return None
-    
     def _check_display_connected(self):
         """Check if any display is connected"""
         try:
-            # Try tvservice first
-            try:
-                result = subprocess.run(['tvservice', '-s'], capture_output=True, text=True, timeout=2)
-                if result.returncode == 0:
-                    stdout = result.stdout.lower()
-                    if 'hdmi' in stdout and 'off' not in stdout and 'unknown' not in stdout:
-                        return True
-            except:
-                pass
-            
-            # Check /sys/class/drm
+            # Check DRM status
             import glob
-            for status_file in glob.glob('/sys/class/drm/card*-*/status'):
+            for status_file in glob.glob('/sys/class/drm/card*/status'):
                 try:
                     with open(status_file, 'r') as f:
                         if f.read().strip() == 'connected':
                             return True
                 except:
-                    continue
-            
-            return False
-            
+                    pass
+        except:
+            pass
+        
+        return False
+    
+    def _find_drm_device(self):
+        """Find available DRM device"""
+        try:
+            # Try common DRM devices in order
+            for device in ['/dev/dri/card1', '/dev/dri/card0']:
+                if os.path.exists(device):
+                    return device
         except Exception as e:
-            logger.debug(f"Display detection error: {e}")
-            return False
+            logger.debug(f"Error finding DRM device: {e}")
+        return None
     
     def _ensure_blank_screen(self):
-        """FIXED: Ensure screen is completely blank when no video is playing"""
+        """Ensure screen is blanked when not playing"""
         try:
             # Method 1: Use vcgencmd to turn display on but blank
             subprocess.run(['vcgencmd', 'display_power', '1'], 
@@ -304,51 +317,39 @@ class MPVController:
                 except:
                     pass
             
-            # Method 3: Set console blank time to 1 second (will blank after 1 second of inactivity)
+            # Method 3: Set console blank time to 1 second
             subprocess.run(['sudo', 'sh', '-c', 'echo 1 > /sys/module/kernel/parameters/consoleblank'],
                           capture_output=True, timeout=1)
             
+            # Method 4: Clear framebuffer to black (less aggressive than the working file)
+            for fb_device in ['/dev/fb0']:
+                if os.path.exists(fb_device):
+                    try:
+                        subprocess.run(['dd', 'if=/dev/zero', f'of={fb_device}', 'bs=1M', 'count=1'],
+                                     capture_output=True, timeout=1)
+                    except:
+                        pass
         except:
             pass
     
-    def pause(self):
-        """Toggle pause/resume"""
-        try:
-            if self._send_command(['cycle', 'pause']):
-                if self.state == 'playing':
-                    self.state = 'paused'
-                elif self.state == 'paused':
-                    self.state = 'playing'
-                return True
-            return False
-        except Exception as e:
-            logger.error(f"Error toggling pause: {e}")
-            return False
-    
-    def resume(self):
-        """Resume playback if paused"""
-        if self.state == 'paused':
-            return self.pause()
-        return True
-    
     def stop(self):
-        """Stop playback and ensure blank screen"""
+        """Stop current playback"""
         try:
-            # Send quit command to MPV
-            self._send_command(['quit'])
+            # Send quit command first
+            if os.path.exists(self.mpv_socket):
+                self._send_command(['quit'])
+                time.sleep(0.2)
             
-            # Terminate process if still running
-            if self.process and self.process.poll() is None:
+            # Then terminate process
+            if self.process:
                 self.process.terminate()
-                time.sleep(0.5)
-                if self.process.poll() is None:
+                try:
+                    self.process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
                     self.process.kill()
-            
-            self.process = None
-            self.state = 'stopped'
-            self.current_file = None
-            self.position = 0
-            self.duration = 0
+                    self.process.wait()
+                
+                self.process = None
             
             # Clean up socket
             if os.path.exists(self.mpv_socket):
@@ -357,21 +358,79 @@ class MPVController:
                 except:
                     pass
             
-            # Ensure blank screen
+            self.state = 'stopped'
+            self.is_paused = False
+            self.current_file = None
+            self.position = 0
+            self.duration = 0
+            
+            # Blank the screen
             self._ensure_blank_screen()
             
-            logger.info("Playback stopped")
+            logger.info("MPV stopped")
             return True
             
         except Exception as e:
-            logger.error(f"Error stopping playback: {e}")
+            logger.error(f"Error stopping MPV: {e}")
+            return False
+    
+    def pause(self):
+        """Toggle pause/resume"""
+        try:
+            if self.state == 'stopped':
+                return False
+                
+            # Toggle based on current pause state
+            if self.is_paused:
+                # Resume
+                return self.resume()
+            else:
+                # Pause
+                if self._send_command(['set_property', 'pause', True]):
+                    self.state = 'paused'
+                    self.is_paused = True
+                    logger.debug("Playback paused")
+                    return True
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error toggling pause: {e}")
+            return False
+    
+    def resume(self):
+        """Resume playback if paused"""
+        try:
+            if self._send_command(['set_property', 'pause', False]):
+                self.state = 'playing'
+                self.is_paused = False
+                logger.debug("Playback resumed")
+                
+                # Send a small seek to force audio resync if needed
+                # This helps with audio issues after pause/resume
+                if self.position > 0:
+                    self._send_command(['seek', '0', 'relative'])
+                
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error resuming: {e}")
             return False
     
     def seek(self, position):
         """Seek to specific position in seconds"""
         try:
+            # Ensure audio sync after seek
             if self._send_command(['seek', position, 'absolute']):
                 self.position = position
+                
+                # Force audio resync by briefly toggling audio
+                # This helps prevent audio loss after seeking
+                time.sleep(0.1)
+                self._send_command(['cycle', 'audio'])
+                time.sleep(0.1)
+                self._send_command(['cycle', 'audio'])
+                
+                logger.debug(f"Seeked to position {position}")
                 return True
             return False
         except Exception as e:
@@ -381,15 +440,22 @@ class MPVController:
     def skip(self, seconds):
         """Skip forward or backward by specified seconds"""
         try:
-            # Get current position first
-            current_pos = self.get_position()
-            new_pos = max(0, current_pos + seconds)
-            
-            # Don't seek beyond duration if known
-            if self.duration > 0:
-                new_pos = min(new_pos, self.duration)
-            
-            return self.seek(new_pos)
+            # Use relative seek for skipping
+            if self._send_command(['seek', seconds, 'relative']):
+                # Update position
+                time.sleep(0.1)
+                pos = self._get_property('time-pos')
+                if pos is not None:
+                    self.position = float(pos)
+                
+                # Force audio resync
+                self._send_command(['cycle', 'audio'])
+                time.sleep(0.1)
+                self._send_command(['cycle', 'audio'])
+                
+                logger.debug(f"Skipped {seconds} seconds")
+                return True
+            return False
         except Exception as e:
             logger.error(f"Error skipping: {e}")
             return False
@@ -410,6 +476,7 @@ class MPVController:
         # Check if process is still running
         if self.process and self.process.poll() is not None:
             self.state = 'stopped'
+            self.is_paused = False
             self.current_file = None
             self._ensure_blank_screen()
         
@@ -473,12 +540,15 @@ class MPVController:
         logger.info(f"HDMI output set to: {output}")
         
         # If currently playing, restart playback with new output
-        if self.state == 'playing' and self.current_file:
+        if self.state in ['playing', 'paused'] and self.current_file:
             current_pos = self.position
+            was_paused = self.is_paused
             self.play(self.current_file)
             if current_pos > 0:
                 time.sleep(0.5)
                 self.seek(current_pos)
+            if was_paused:
+                self.pause()
         
         return True
     
@@ -573,6 +643,15 @@ class MPVController:
                     if dur is not None:
                         self.duration = float(dur)
                     
+                    # Check pause state from MPV
+                    paused = self._get_property('pause')
+                    if paused is not None:
+                        self.is_paused = bool(paused)
+                        if self.is_paused:
+                            self.state = 'paused'
+                        else:
+                            self.state = 'playing'
+                    
                     # Check if playback ended
                     if self.duration > 0 and self.position >= self.duration - 1:
                         # Handle loop if enabled
@@ -580,6 +659,7 @@ class MPVController:
                             self.seek(0)
                         else:
                             self.state = 'stopped'
+                            self.is_paused = False
                             self._ensure_blank_screen()
                             
             except Exception as e:
@@ -591,4 +671,3 @@ class MPVController:
         """Cleanup resources"""
         self.monitor_running = False
         self.stop()
-
